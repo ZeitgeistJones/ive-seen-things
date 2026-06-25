@@ -171,14 +171,10 @@ ${eventSummary}
 
 Write 4-6 sentences. First person. No markdown. Gambling and chaos should feature prominently if the data supports it. Make it feel like the coin lived a full, chaotic life before landing here. End with dark humor or quiet resignation. Be specific — name Uniswap, Aerodrome, Base Bridge etc. where relevant.`;
 
-        const storyRes = await fetch('https://api.anthropic.com/v1/messages', {
+        const storyRes = await fetch('/api/story', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'claude-sonnet-4-6',
-            max_tokens: 1000,
-            messages: [{ role: 'user', content: prompt }]
-          })
+          body: JSON.stringify({ prompt })
         });
         const storyData = await storyRes.json();
         const story = storyData.content?.[0]?.text || 'Story unavailable.';
