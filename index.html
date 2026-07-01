@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>I've Seen Things</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Libre+Baskerville:ital,wght@0,400;1,400;1,700&display=swap" rel="stylesheet">
   <style>
     :root[data-theme="dark"] {
@@ -306,6 +308,46 @@
 
     .spin { display: inline-block; width: 9px; height: 9px; border: 1px solid transparent; border-top-color: var(--accent); border-radius: 50%; animation: sp 0.7s linear infinite; margin-right: 6px; vertical-align: middle; }
     @keyframes sp { to { transform: rotate(360deg); } }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+      .cursor { animation: none; opacity: 1; }
+      .card.visible { opacity: 1; filter: none; }
+    }
+
+    input:focus-visible, button:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .story-retry {
+      margin-top: 0.75rem;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--accent);
+      font-family: 'Space Mono', monospace;
+      font-size: 10px;
+      padding: 6px 12px;
+      cursor: pointer;
+    }
+    .story-retry:hover { border-color: var(--accent); }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
   </style>
 </head>
 <body>
@@ -316,11 +358,12 @@
         <p class="sub-rotate" id="subLine"></p>
         <p class="location-card">Base Mainnet &nbsp;·&nbsp; Every block tells a story</p>
       </div>
-      <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">☀ Light</button>
+      <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" aria-label="Toggle light and dark theme">☀ Light</button>
     </div>
 
     <div class="input-row">
-      <input id="walletInput" placeholder="Paste a Base wallet address (0x...)" autocomplete="off" spellcheck="false"/>
+      <label for="walletInput" class="sr-only">Base wallet address</label>
+      <input id="walletInput" placeholder="Paste a Base wallet address (0x...)" autocomplete="off" spellcheck="false" aria-label="Base wallet address"/>
       <button class="trace" id="traceBtn" onclick="traceWallet()">Trace</button>
     </div>
 
@@ -344,24 +387,25 @@
       <p class="gate-title">Want to see more?</p>
       <p class="gate-sub">Show me 10,000,000 CLAWD in your wallet and I'll show you everything.</p>
       <div class="gate-input-row">
-        <input id="clawdWallet" placeholder="0x... your Base wallet" autocomplete="off" spellcheck="false"/>
+        <label for="clawdWallet" class="sr-only">Wallet for CLAWD verification</label>
+        <input id="clawdWallet" placeholder="0x... your Base wallet" autocomplete="off" spellcheck="false" aria-label="Wallet for CLAWD verification"/>
         <button class="verify" id="verifyBtn" onclick="verifyClawd()">Show me</button>
       </div>
-      <p class="gate-error" id="gateError"></p>
+      <p class="gate-error" id="gateError" aria-live="polite"></p>
     </div>
 
-    <div class="status" id="statusLine"></div>
-    <div class="error" id="errorLine"></div>
+    <div class="status" id="statusLine" aria-live="polite"></div>
+    <div class="error" id="errorLine" aria-live="assertive"></div>
 
     <div class="card" id="resultCard">
       <p class="coin-lbl">Most Interesting Token Found</p>
       <p class="coin-name" id="coinName">—</p>
       <p class="coin-meta" id="coinMeta">—</p>
-      <p class="story" id="storyText"></p>
+      <p class="story" id="storyText" aria-live="polite"></p>
       <hr>
       <p class="tl-lbl">Transfer trail</p>
       <div id="timeline"></div>
-      <p class="foot-note">Transfer history via Alchemy &nbsp;·&nbsp; Base mainnet &nbsp;·&nbsp; Labels from curated contract registry</p>
+      <p class="foot-note">Transfer history via Alchemy (inbound + outbound) &nbsp;·&nbsp; Base mainnet &nbsp;·&nbsp; Labels from curated contract registry</p>
     </div>
   </div>
 
@@ -381,18 +425,43 @@
       '0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae':'LI.FI Router',
     };
 
-    const CLAWD_CONTRACT = '0x9f86dB9fc6f7c9408e8Fda3Ff8ce4e78ac7a6b07';
-    const CLAWD_REQUIRED = 10_000_000;
+    const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    let usageCount = parseInt(sessionStorage.getItem('ive_seen_usage') || '0');
-    let clawdVerified = sessionStorage.getItem('ive_seen_clawd') === 'true';
+    let sessionToken = sessionStorage.getItem('ive_seen_session') || null;
+    let lastTraceContext = null;
+
+    function saveSession(token) {
+      if (token) {
+        sessionToken = token;
+        sessionStorage.setItem('ive_seen_session', token);
+      }
+    }
+
+    function parseSessionUsage() {
+      if (!sessionToken) return { freeUses: 0, clawdVerified: false };
+      try {
+        let payload = sessionToken.split('.')[0];
+        payload = payload.replace(/-/g, '+').replace(/_/g, '/');
+        while (payload.length % 4) payload += '=';
+        const json = JSON.parse(atob(payload));
+        return { freeUses: json.freeUses || 0, clawdVerified: !!json.clawdVerified };
+      } catch {
+        return { freeUses: 0, clawdVerified: false };
+      }
+    }
 
     function updatePips() {
-      document.getElementById('pip1').className = 'pip' + (usageCount >= 1 ? ' used' : '');
-      document.getElementById('pip2').className = 'pip' + (usageCount >= 2 ? ' used' : '');
+      const { freeUses } = parseSessionUsage();
+      document.getElementById('pip1').className = 'pip' + (freeUses >= 1 ? ' used' : '');
+      document.getElementById('pip2').className = 'pip' + (freeUses >= 2 ? ' used' : '');
     }
     updatePips();
-    function isGated() { return usageCount >= 2 && !clawdVerified; }
+
+    function isGated() {
+      const { freeUses, clawdVerified } = parseSessionUsage();
+      return freeUses >= 2 && !clawdVerified;
+    }
 
     // --- Typewriter title ---
     const TITLE = "I've Seen Things";
@@ -400,21 +469,23 @@
     const cursorEl = document.getElementById('titleCursor');
     let ti = 0;
     function typeTitle() {
+      if (prefersReducedMotion) {
+        titleEl.textContent = TITLE;
+        cursorEl.style.display = 'none';
+        return;
+      }
       if (ti <= TITLE.length) {
         titleEl.textContent = TITLE.slice(0, ti);
         ti++;
         setTimeout(typeTitle, ti === 1 ? 300 : 55 + Math.random() * 40);
       } else {
-        // Remove cursor after a beat
         setTimeout(() => { cursorEl.style.display = 'none'; }, 1800);
       }
     }
-    setTimeout(typeTitle, 400);
+    setTimeout(typeTitle, prefersReducedMotion ? 0 : 400);
 
-    // Static subtitle
     document.getElementById('subLine').textContent = 'Every coin has a past. Find yours.';
 
-    // --- Theme toggle ---
     function toggleTheme() {
       const html = document.documentElement;
       const isDark = html.getAttribute('data-theme') === 'dark';
@@ -424,22 +495,44 @@
 
     function label(addr) {
       if (!addr) return '?';
-      return LABELS[addr.toLowerCase()] || (addr.slice(0,6) + '…' + addr.slice(-4));
+      return LABELS[addr.toLowerCase()] || (addr.slice(0, 6) + '…' + addr.slice(-4));
     }
 
-    // Convert block hex to a rough human date
-    function blockToDate(blockHex) {
+    function transferDate(transfer) {
+      const ts = transfer.metadata?.blockTimestamp;
+      if (ts) {
+        try {
+          const ms = typeof ts === 'string' && ts.startsWith('0x')
+            ? parseInt(ts, 16) * 1000
+            : new Date(ts).getTime();
+          if (!isNaN(ms)) {
+            return new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+          }
+        } catch (_) { /* fall through */ }
+      }
       try {
-        const block = parseInt(blockHex, 16);
-        // Base launched ~Aug 2023, block 0. ~2s per block
+        const block = parseInt(transfer.blockNum, 16);
         const baseGenesis = new Date('2023-08-09T00:00:00Z').getTime();
-        const ms = baseGenesis + block * 2000;
-        return new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      } catch(e) { return 'Unknown date'; }
+        return new Date(baseGenesis + block * 2000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      } catch {
+        return 'Unknown date';
+      }
     }
 
     function setAddr(a) { document.getElementById('walletInput').value = a; }
-    function setStatus(m) { document.getElementById('statusLine').innerHTML = m ? `<span class="spin"></span>${m}` : ''; }
+
+    function setStatus(m) {
+      const el = document.getElementById('statusLine');
+      if (!m) { el.textContent = ''; return; }
+      el.textContent = '';
+      if (!prefersReducedMotion) {
+        const spin = document.createElement('span');
+        spin.className = 'spin';
+        el.appendChild(spin);
+      }
+      el.appendChild(document.createTextNode(m));
+    }
+
     function setError(m) { document.getElementById('errorLine').textContent = m || ''; }
 
     async function verifyClawd() {
@@ -447,7 +540,7 @@
       const gateError = document.getElementById('gateError');
       gateError.textContent = '';
 
-      if (!/^0x[0-9a-fA-F]{40}$/.test(wallet)) {
+      if (!ADDRESS_RE.test(wallet)) {
         gateError.textContent = 'Enter a valid Base wallet address (0x...)';
         return;
       }
@@ -460,34 +553,194 @@
         const res = await fetch('/api/clawd', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address: wallet })
+          body: JSON.stringify({ address: wallet, sessionToken })
         });
         const data = await res.json();
+
+        if (!res.ok) {
+          gateError.textContent = data.error || 'Verification failed. Try again.';
+          return;
+        }
+
+        if (data.sessionToken) saveSession(data.sessionToken);
+
         if (data.verified) {
-          clawdVerified = true;
-          sessionStorage.setItem('ive_seen_clawd', 'true');
           document.getElementById('gateBox').classList.remove('show');
+          updatePips();
         } else {
           gateError.textContent = `Insufficient CLAWD. Required: 10,000,000. Found: ${(data.balance || 0).toLocaleString()}.`;
         }
-      } catch(e) {
-        gateError.textContent = 'Verification failed. Try again.';
+      } catch (e) {
+        gateError.textContent = 'Network error. Check your connection and try again.';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Show me';
       }
-
-      btn.disabled = false;
-      btn.textContent = 'Verify';
     }
 
     function scoreTransfer(t) {
       let s = 0;
-      if (LABELS[(t.from||'').toLowerCase()]) s += 25;
-      if (LABELS[(t.to||'').toLowerCase()]) s += 25;
-      const v = parseFloat(t.value||0);
+      if (LABELS[(t.from || '').toLowerCase()]) s += 25;
+      if (LABELS[(t.to || '').toLowerCase()]) s += 25;
+      const v = parseFloat(t.value || 0);
       if (v > 100) s += 20;
       if (v > 1000) s += 20;
       if (t.asset && t.asset !== 'ETH') s += 10;
-      s += Math.random() * 5;
       return s;
+    }
+
+    function sortTransfers(transfers) {
+      return [...transfers].sort((a, b) => {
+        const diff = scoreTransfer(b) - scoreTransfer(a);
+        if (diff !== 0) return diff;
+        return parseInt(b.blockNum, 16) - parseInt(a.blockNum, 16);
+      });
+    }
+
+    function buildEvents(sorted) {
+      return sorted.slice(0, 6).map(t => ({
+        from: t.from,
+        to: t.to,
+        asset: t.asset || '?',
+        value: parseFloat(t.value || 0).toFixed(4),
+        block: t.blockNum,
+        date: transferDate(t),
+        fromLabel: label(t.from),
+        toLabel: label(t.to),
+      }));
+    }
+
+    function renderTimeline(events) {
+      const tl = document.getElementById('timeline');
+      tl.textContent = '';
+      const dots = ['t', 'g', ''];
+      events.forEach((e, i) => {
+        const event = document.createElement('div');
+        event.className = 'event';
+
+        const dot = document.createElement('div');
+        dot.className = 'dot ' + dots[i % 3];
+        event.appendChild(dot);
+
+        const body = document.createElement('div');
+
+        const time = document.createElement('div');
+        time.className = 'ev-time';
+        time.textContent = `${e.date} · ${e.asset} ${e.value}`;
+        body.appendChild(time);
+
+        const text = document.createElement('div');
+        text.className = 'ev-text';
+
+        const fromSpan = document.createElement('span');
+        fromSpan.className = 'addr';
+        fromSpan.textContent = e.fromLabel;
+        text.appendChild(fromSpan);
+
+        const arrow = document.createElement('span');
+        arrow.style.color = 'var(--foot)';
+        arrow.style.margin = '0 6px';
+        arrow.textContent = '→';
+        text.appendChild(arrow);
+
+        const toSpan = document.createElement('span');
+        toSpan.className = 'addr';
+        toSpan.textContent = e.toLabel;
+        text.appendChild(toSpan);
+
+        body.appendChild(text);
+        event.appendChild(body);
+        tl.appendChild(event);
+      });
+    }
+
+    function showStory(story, storyFailed) {
+      const storyEl = document.getElementById('storyText');
+      storyEl.textContent = '';
+
+      const existingRetry = storyEl.parentElement.querySelector('.story-retry');
+      if (existingRetry) existingRetry.remove();
+
+      if (storyFailed) {
+        storyEl.textContent = 'Story unavailable — the narrator went quiet. Your transfer data is still below.';
+        const retry = document.createElement('button');
+        retry.className = 'story-retry';
+        retry.textContent = 'Retry story';
+        retry.type = 'button';
+        retry.onclick = () => retryStory();
+        storyEl.after(retry);
+        return;
+      }
+
+      if (prefersReducedMotion) {
+        storyEl.textContent = story;
+        return;
+      }
+
+      let i = 0;
+      const chars = story.split('');
+      function type() {
+        if (i < chars.length) {
+          storyEl.textContent += chars[i++];
+          setTimeout(type, 18);
+        }
+      }
+      setTimeout(type, 400);
+    }
+
+    async function fetchStory(addr, top, events) {
+      const storyRes = await fetch('/api/story', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          address: addr,
+          topToken: top.asset || 'ETH',
+          events: events.map(e => ({
+            asset: e.asset,
+            fromLabel: e.fromLabel,
+            toLabel: e.toLabel,
+            value: e.value,
+            block: e.block,
+          })),
+          sessionToken,
+        })
+      });
+      const storyData = await storyRes.json();
+
+      if (!storyRes.ok) {
+        if (storyRes.status === 403 && storyData.code === 'GATED') {
+          document.getElementById('gateBox').classList.add('show');
+          throw new Error('GATED');
+        }
+        return { story: null, failed: true, error: storyData.error };
+      }
+
+      return { story: storyData.story, failed: !storyData.story };
+    }
+
+    async function retryStory() {
+      if (!lastTraceContext) return;
+      const btn = document.getElementById('traceBtn');
+      btn.disabled = true;
+      setStatus('Writing the story…');
+      setError('');
+
+      try {
+        const result = await fetchStory(
+          lastTraceContext.addr,
+          lastTraceContext.top,
+          lastTraceContext.events
+        );
+        if (result.error && result.error !== 'GATED') {
+          setError(result.error);
+        }
+        showStory(result.story || '', result.failed);
+      } catch (e) {
+        if (e.message !== 'GATED') setError(e.message || 'Story retry failed.');
+      } finally {
+        setStatus('');
+        btn.disabled = false;
+      }
     }
 
     async function traceWallet() {
@@ -501,7 +754,7 @@
       const card = document.getElementById('resultCard');
       card.classList.remove('show', 'visible');
 
-      if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) {
+      if (!ADDRESS_RE.test(addr)) {
         setError('Please enter a valid Base wallet address (0x...)');
         return;
       }
@@ -514,108 +767,96 @@
         const res = await fetch('/api/trace', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address: addr })
+          body: JSON.stringify({ address: addr, sessionToken })
         });
         const json = await res.json();
+
+        if (!res.ok) {
+          setStatus('');
+          if (res.status === 403 && json.code === 'GATED') {
+            document.getElementById('gateBox').classList.add('show');
+            setError('Free traces used. Verify CLAWD holdings to continue.');
+          } else {
+            setError(json.error || `Server error (${res.status}). Try again.`);
+          }
+          return;
+        }
+
+        if (json.sessionToken) {
+          saveSession(json.sessionToken);
+          updatePips();
+        }
+
         const transfers = json.result?.transfers || [];
 
         if (!transfers.length) {
           setStatus('');
           setError('No transfers found for this address on Base. Try a different wallet.');
-          btn.disabled = false;
           return;
         }
 
         setStatus('Picking the most interesting coin…');
-        await new Promise(r => setTimeout(r, 300));
 
-        const sorted = [...transfers].sort((a,b) => scoreTransfer(b) - scoreTransfer(a));
+        const sorted = sortTransfers(transfers);
         const top = sorted[0];
-        const events = sorted.slice(0,6).map(t => ({
-          from: t.from, to: t.to,
-          asset: t.asset || '?',
-          value: parseFloat(t.value||0).toFixed(4),
-          block: t.blockNum,
-          date: blockToDate(t.blockNum)
-        }));
+        const events = buildEvents(sorted);
+
+        lastTraceContext = { addr, top, events };
 
         setStatus('Writing the story…');
-
-        const eventSummary = events.map(e =>
-          `  ${e.asset} from ${label(e.from)} → ${label(e.to)}, value: ${e.value}, block: ${e.block}`
-        ).join('\n');
-
-        const prompt = `You are writing a short, dramatic, first-person biography of a crypto token on Base blockchain — told from the token's perspective. The tone should be darkly comedic, world-weary, and vivid. The coin has been through it — gambling, degen trades, MEV bots, shady wallets, bridges, swaps. It has seen things and has feelings about them. Reference real on-chain events from the data below.
-
-Wallet: ${addr}
-Top token: ${top.asset || 'ETH'}
-Recent inbound transfers:
-${eventSummary}
-
-Write 4-6 sentences. First person. No markdown. Gambling and chaos should feature prominently if the data supports it. Make it feel like the coin lived a full, chaotic life before landing here. End with dark humor or quiet resignation. Be specific — name Uniswap, Aerodrome, Base Bridge etc. where relevant.`;
-
-        const storyRes = await fetch('/api/story', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt })
-        });
-        const storyData = await storyRes.json();
-        const story = storyData.content?.[0]?.text || 'Story unavailable.';
-
-        usageCount = Math.min(usageCount + 1, 2);
-        sessionStorage.setItem('ive_seen_usage', usageCount.toString());
-        updatePips();
+        const storyResult = await fetchStory(addr, top, events);
 
         document.getElementById('coinName').textContent = top.asset || 'ETH';
         document.getElementById('coinMeta').textContent =
           `${transfers.length} transfers found · Most recent from ${label(top.from)}`;
 
-        const storyEl = document.getElementById('storyText');
-        storyEl.textContent = '';
+        if (prefersReducedMotion) {
+          card.classList.add('show', 'visible');
+        } else {
+          card.classList.add('show');
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => { card.classList.add('visible'); });
+          });
+        }
 
-        // Darkroom develop effect
-        card.classList.add('show');
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => { card.classList.add('visible'); });
-        });
+        showStory(storyResult.story || '', storyResult.failed);
+        if (storyResult.error && storyResult.error !== 'GATED') {
+          setError(storyResult.error);
+        }
 
-        // Typewriter the story
-        let i = 0;
-        const chars = story.split('');
-        function type() { if (i < chars.length) { storyEl.textContent += chars[i++]; setTimeout(type, 18); } }
-        setTimeout(type, 400);
-
-        const tl = document.getElementById('timeline');
-        const dots = ['t','g',''];
-        tl.innerHTML = events.map((e, i) => `
-          <div class="event">
-            <div class="dot ${dots[i%3]}"></div>
-            <div>
-              <div class="ev-time">${e.date} &nbsp;·&nbsp; ${e.asset} ${e.value}</div>
-              <div class="ev-text">
-                <span class="addr">${label(e.from)}</span>
-                <span style="color:var(--foot);margin:0 6px">→</span>
-                <span class="addr">${label(e.to)}</span>
-              </div>
-            </div>
-          </div>`).join('');
-
+        renderTimeline(events);
         setStatus('');
 
         if (isGated()) {
-          setTimeout(() => { document.getElementById('gateBox').classList.add('show'); }, 600);
+          setTimeout(() => { document.getElementById('gateBox').classList.add('show'); }, prefersReducedMotion ? 0 : 600);
         }
 
-      } catch(e) {
+      } catch (e) {
         setStatus('');
-        setError('Error: ' + (e.message || 'Something went wrong.'));
+        if (e.message !== 'GATED') {
+          setError('Error: ' + (e.message || 'Something went wrong.'));
+        }
+      } finally {
+        btn.disabled = false;
       }
-      btn.disabled = false;
     }
 
     document.getElementById('walletInput').addEventListener('keydown', e => {
       if (e.key === 'Enter') traceWallet();
     });
+
+    document.getElementById('clawdWallet').addEventListener('keydown', e => {
+      if (e.key === 'Enter') verifyClawd();
+    });
+
+    sessionStorage.removeItem('ive_seen_usage');
+    sessionStorage.removeItem('ive_seen_clawd');
+
+    const params = new URLSearchParams(window.location.search);
+    const sharedAddr = params.get('address');
+    if (sharedAddr && ADDRESS_RE.test(sharedAddr.trim())) {
+      setAddr(sharedAddr.trim());
+    }
 
     if (isGated()) document.getElementById('gateBox').classList.add('show');
   </script>

@@ -1,0 +1,9 @@
+{
+  "name": "ive-seen-things",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vercel dev",
+    "test": "node --test test/shared.test.js"
+  }
+}
